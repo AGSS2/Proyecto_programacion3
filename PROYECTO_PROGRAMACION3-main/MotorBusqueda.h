@@ -7,7 +7,12 @@
 #include <algorithm>
 #include <cctype>
 #include <unordered_map>
+#include <future>
+#include <chrono>
+#include <thread>
+
 using namespace std;
+using namespace std::chrono;
 // ── Índices de columnas del CSV de Wikipedia ──────────────────────────────────
 static constexpr int COL_ANIO      = 0;
 static constexpr int COL_TITULO    = 1;
@@ -127,6 +132,8 @@ inline bool esInicioNuevaPelicula(const string& linea) {
 
 // ── Carga el CSV y devuelve vector de Pelicula ────────────────────────────────
 inline unordered_map<int, Pelicula> cargarCSV(const string& ruta = "wiki_movie_plots_deduped_final.csv") {
+    auto inic = high_resolution_clock::now();
+
     unordered_map<int, Pelicula> catalogo;
     ifstream archivo(ruta);
 
@@ -137,12 +144,12 @@ inline unordered_map<int, Pelicula> cargarCSV(const string& ruta = "wiki_movie_p
 
     string linea;
     bool primeraLinea = true;
+    vector<string> lineasCompletas;
 
     while (getline(archivo, linea)) {
         if (primeraLinea) { primeraLinea = false; continue; }
         if (linea.empty()) continue;
 
-        // acumular líneas que pertenecen a la misma película
         string lineaCompleta = linea;
         while (true) {
             streampos posicion = archivo.tellg();
@@ -155,29 +162,73 @@ inline unordered_map<int, Pelicula> cargarCSV(const string& ruta = "wiki_movie_p
             }
             lineaCompleta += "\n" + siguiente;
         }
+        lineasCompletas.push_back(move(lineaCompleta));
+    }
+    archivo.close();
 
-        vector<string> fila = parsearLinea(lineaCompleta);
+    unsigned int numHilos = thread::hardware_concurrency();
+    if (numHilos == 0) numHilos = 4; // Por seguridad si no detecta ninguno
 
-        Pelicula p;
-        p.id       = catalogo.size();
-        p.anio     = fila.size() > COL_ANIO      ? fila[COL_ANIO]      : "unknown";
-        p.titulo   = fila.size() > COL_TITULO    ? fila[COL_TITULO]    : "unknown";
-        p.sinopsis = fila.size() > COL_SINOPSIS  ? fila[COL_SINOPSIS]  : "unknown";
+    size_t totalPeliculas = lineasCompletas.size();
+    size_t tamanoChunk = totalPeliculas / numHilos;
 
-        string director = fila.size() > COL_DIRECTOR ? fila[COL_DIRECTOR] : "unknown";
-        string cast     = fila.size() > COL_CAST     ? fila[COL_CAST]     : "unknown";
-        string genero   = fila.size() > COL_GENERO   ? fila[COL_GENERO]   : "unknown";
+    // Aquí guardaremos las promesas/futuros de cada hilo
+    vector<future<vector<Pelicula>>> futuros;
 
-        p.directores = director != "unknown" ? dividir(director) : vector<string>{"unknown"};
-        p.actores    = cast     != "unknown" ? dividir(cast)     : vector<string>{"unknown"};
-        p.generos    = genero   != "unknown" ? dividir(genero)   : vector<string>{"unknown"};
+    for (unsigned int i = 0; i < numHilos; ++i) {
+        size_t inicio = i * tamanoChunk;
+        // El último hilo se asegura de llevarse el residuo de la división
+        size_t fin = (i == numHilos - 1) ? totalPeliculas : inicio + tamanoChunk;
 
-        catalogo[p.id] = move(p);
+        // Lanzamos la tarea asíncrona en un hilo separado
+        futuros.push_back(async(launch::async, [inicio, fin, &lineasCompletas]() {
+            vector<Pelicula> peliculasLocales;
+            peliculasLocales.reserve(fin - inicio);
+
+            for (size_t j = inicio; j < fin; ++j) {
+                // Cada hilo parsea su fila de forma independiente
+                vector<string> fila = parsearLinea(lineasCompletas[j]);
+
+                Pelicula p;
+                // Usamos 'j' como ID único secuencial (reemplaza a catalogo.size())
+                p.id       = static_cast<int>(j);
+                p.anio     = fila.size() > COL_ANIO      ? fila[COL_ANIO]      : "unknown";
+                p.titulo   = fila.size() > COL_TITULO    ? fila[COL_TITULO]    : "unknown";
+                p.sinopsis = fila.size() > COL_SINOPSIS  ? fila[COL_SINOPSIS]  : "unknown";
+
+                string director = fila.size() > COL_DIRECTOR ? fila[COL_DIRECTOR] : "unknown";
+                string cast     = fila.size() > COL_CAST     ? fila[COL_CAST]     : "unknown";
+                string genero   = fila.size() > COL_GENERO   ? fila[COL_GENERO]   : "unknown";
+
+                // Modificar variables locales es 100% seguro entre hilos
+                p.directores = director != "unknown" ? dividir(director) : vector<string>{"unknown"};
+                p.actores    = cast     != "unknown" ? dividir(cast)     : vector<string>{"unknown"};
+                p.generos    = genero   != "unknown" ? dividir(genero)   : vector<string>{"unknown"};
+
+                peliculasLocales.push_back(move(p));
+            }
+            return peliculasLocales;
+        }));
     }
 
-    archivo.close();
+    for (auto& f : futuros) {
+        // f.get() bloquea temporalmente hasta que el hilo en cuestión termine y entrega su vector
+        vector<Pelicula> subLista = f.get();
+        for (auto& p : subLista) {
+            catalogo[p.id] = move(p);
+        }
+    }
+
     cout << "[MotorBusqueda] " << catalogo.size()
-         << " peliculas cargadas desde \"" << ruta << "\"\n";
+         << " peliculas cargadas EN PARALELO desde \"" << ruta << "\"\n";
+
+    auto fin = high_resolution_clock::now();
+
+    // Calcular duración en milisegundos
+    auto duracion = duration_cast<milliseconds>(fin - inic);
+
+    cout << "Tiempo: " << duracion.count() << " ms" << endl;
+
     return catalogo;
 }
 
@@ -186,43 +237,95 @@ inline vector<Pelicula> buscarPorPalabra(
     const unordered_map<int, Pelicula>& catalogo,
     const string& consulta
 ) {
+    auto inic = high_resolution_clock::now();
+
     vector<string> tokensConsulta = tokenizar(consulta);
-    vector<Pelicula> resultados;
-    for (const auto& par : catalogo) {
-        const Pelicula& p = par.second;
-        bool encontrado = false;
-        // Buscar en título
-        vector<string> tokensTitulo = tokenizar(p.titulo);
-        for (const auto& palabra : tokensTitulo) {
-            for (const auto& token : tokensConsulta) {
-                if (palabra==token) {
-                    resultados.push_back(p);
-                    encontrado = true;
-                    break;
+    vector<const Pelicula*> todasLasPeliculas;
+
+    for (const auto& par : catalogo)
+        todasLasPeliculas.push_back(&par.second);
+
+    if (todasLasPeliculas.empty())
+        return {};
+
+    unsigned int numHilos = std::thread::hardware_concurrency();
+    if (numHilos == 0)
+        numHilos = 4;
+
+    numHilos = min<unsigned int>(numHilos, todasLasPeliculas.size());
+
+    size_t tamanoChunk = todasLasPeliculas.size() / numHilos;
+    size_t resto = todasLasPeliculas.size() % numHilos;
+
+    vector<future<vector<Pelicula>>> futuros;
+
+    size_t inicio = 0;
+
+    for (unsigned int i = 0; i < numHilos; ++i) {
+        size_t fin = inicio + tamanoChunk + (i < resto ? 1 : 0);
+
+        futuros.push_back(std::async(std::launch::async,
+            [inicio, fin, &todasLasPeliculas, &tokensConsulta]() {
+
+                vector<Pelicula> resultadosLocales;
+
+                for (size_t j = inicio; j < fin; ++j) {
+                    const Pelicula& p = *todasLasPeliculas[j];
+                    bool encontrado = false;
+
+                    // Buscar en el título
+                    vector<string> tokensTitulo = tokenizar(p.titulo);
+
+                    for (const auto& palabra : tokensTitulo) {
+                        for (const auto& token : tokensConsulta) {
+                            if (palabra == token) {
+                                resultadosLocales.push_back(p);
+                                encontrado = true;
+                                break;
+                            }
+                        }
+                        if (encontrado)
+                            break;
+                    }
+
+                    if (encontrado)
+                        continue;
+
+                    // Buscar en la sinopsis
+                    vector<string> tokensSinopsis = tokenizar(p.sinopsis);
+
+                    for (const auto& palabra : tokensSinopsis) {
+                        for (const auto& token : tokensConsulta) {
+                            if (palabra == token) {
+                                resultadosLocales.push_back(p);
+                                encontrado = true;
+                                break;
+                            }
+                        }
+                        if (encontrado)
+                            break;
+                    }
                 }
-            }
-            if (encontrado) {
-                break;
-            }
-        }
-        if (encontrado) {
-            continue;
-        }
-        // Buscar en sinopsis
-        vector<string> tokensSinopsis = tokenizar(p.sinopsis);
-        for (const auto& palabra : tokensSinopsis) {
-            for (const auto& token : tokensConsulta) {
-                if (palabra==token) {
-                    resultados.push_back(p);
-                    encontrado = true;
-                    break;
-                }
-            }
-            if (encontrado) {
-                break;
-            }
-        }
+
+                return resultadosLocales;
+            }));
+
+        inicio = fin;
     }
+
+    vector<Pelicula> resultados;
+
+    for (auto& futuro : futuros) {
+        vector<Pelicula> parciales = futuro.get();
+        resultados.insert(resultados.end(), parciales.begin(), parciales.end());
+    }
+
+    auto fin = high_resolution_clock::now();
+
+    // Calcular duración en milisegundos
+    auto duracion = duration_cast<milliseconds>(fin - inic);
+
+    cout << "Tiempo: " << duracion.count() << " ms" << endl;
     return resultados;
 }
 // ── Búsqueda por tag: director, casting o género ──────────────────────────────
