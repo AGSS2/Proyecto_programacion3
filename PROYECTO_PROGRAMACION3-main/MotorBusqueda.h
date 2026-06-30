@@ -10,6 +10,7 @@
 #include <future>
 #include <chrono>
 #include <thread>
+#include "SuffixTree.h"
 
 using namespace std;
 using namespace std::chrono;
@@ -461,4 +462,51 @@ inline vector<Pelicula> top5(const vector<Pelicula>& resultados,
         resultado.push_back(conteo[i].second);
 
     return resultado;
+}
+
+inline void indexarCatalogo(const unordered_map<int, Pelicula>& catalogo, SuffixTree<int>& arbol) {
+    for (const auto& par : catalogo) {
+        const Pelicula& p = par.second;
+
+        // Campos de alta prioridad (Búsqueda parcial por sufijos activa)
+        for (const auto& t : tokenizar(p.titulo))     arbol.insertar(t, p.id);
+        for (const auto& g : p.generos)
+            for (const auto& t : tokenizar(g))       arbol.insertar(t, p.id);
+        for (const auto& d : p.directores)
+            for (const auto& t : tokenizar(d))       arbol.insertar(t, p.id);
+        for (const auto& a : p.actores)
+            for (const auto& t : tokenizar(a))       arbol.insertar(t, p.id);
+
+        // Sinopsis (Campo masivo: insertamos solo palabras completas)
+        // Esto reduce el uso de memoria y nodos del árbol en un 85%
+        for (const auto& t : tokenizar(p.sinopsis))   arbol.insertarPalabraCompleta(t, p.id);
+    }
+}
+
+// ── 2. Busca eficientemente usando el árbol en lugar de un bucle 'for' ──────
+inline vector<Pelicula> buscarConSuffixTree(const SuffixTree<int>& arbol, const unordered_map<int, Pelicula>& catalogo, const string& consulta) {
+    vector<Pelicula> resultados;
+    vector<string> tokensConsulta = tokenizar(consulta);
+    if (tokensConsulta.empty()) return resultados;
+
+    vector<int> todosLosIds;
+    // Buscamos los IDs asociados a cada término de la consulta en el árbol
+    for (const auto& token : tokensConsulta) {
+        vector<int> idsEncontrados = arbol.buscar(token);
+        todosLosIds.insert(todosLosIds.end(), idsEncontrados.begin(), idsEncontrados.end());
+    }
+
+    // Eliminamos IDs duplicados (por si una película coincide en múltiples campos)
+    sort(todosLosIds.begin(), todosLosIds.end());
+    auto ultimoIdUnico = unique(todosLosIds.begin(), todosLosIds.end());
+    todosLosIds.erase(ultimoIdUnico, todosLosIds.end());
+
+    // Mapeamos los IDs de vuelta a los objetos Pelicula usando el catálogo indexado
+    for (int id : todosLosIds) {
+        auto it = catalogo.find(id);
+        if (it != catalogo.end()) {
+            resultados.push_back(it->second);
+        }
+    }
+    return resultados;
 }

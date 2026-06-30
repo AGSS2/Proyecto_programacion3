@@ -109,6 +109,10 @@ inline void mostrarDetallePelicula(
     for (const auto& d : p.directores) std::cout << d << " ";
     std::cout << "\n";
 
+    std::cout << "Actor(es): ";
+    for (const auto& d : p.actores) std::cout << d << ", ";
+    std::cout << "\n";
+
     std::cout << "----------------------------------------\n";
     std::cout << "Sinopsis:\n" << p.sinopsis << "\n";
     std::cout << "----------------------------------------\n";

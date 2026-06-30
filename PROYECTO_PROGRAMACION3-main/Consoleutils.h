@@ -5,7 +5,7 @@
 #include <windows.h>
 using namespace std;
 inline void limpiarPantalla() {
-    cout<<"------------------------------------------------------------";
+    cout<<"------------------------------------------------------------"<<endl;
 }
 
 inline void pausar() {

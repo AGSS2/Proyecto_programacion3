@@ -14,10 +14,15 @@ int main() {
     EstadoPantalla estado = MENU_PRINCIPAL;
     std::unordered_map<int, Pelicula> db = cargarCSV();
     if (db.empty()) {
-        std::cout << "No se pudo cargar la base de datos.\n";
-        std::cout << "Verifica que el archivo CSV este en la carpeta del proyecto.\n";
+        std::cout << "No se pudo cargar la base de datos.\\n";
         return 1;
     }
+
+    // ── NUEVO: Crear e Indexar el Árbol de Sufijos ───────────────────────────
+    SuffixTree<int> arbolBusqueda;;
+    std::cout << "[Sistema] Indexando palabras clave en el Arbol de Sufijos... ";
+    indexarCatalogo(db, arbolBusqueda);
+    std::cout << "Listo!" << endl;
 
     // ── 3. Estado de la aplicación ────────────────────────────────────────────
     std::vector<Pelicula> resultados;
@@ -39,9 +44,10 @@ int main() {
                 estado = vistaBuscar(consulta, esBusquedaPorTag);
                 if (!consulta.empty()) {
                     if (esBusquedaPorTag) {
-                        resultados = buscarPorTag(db, consulta);
+                        resultados = buscarPorTag(db, consulta); // Puedes mantenerlo o adaptarlo igual
                     } else {
-                        resultados = buscarPorPalabra(db, consulta);
+                        // ── REEMPLAZO: Cambiamos buscarPorPalabra(db, consulta) por el árbol ──
+                        resultados = buscarConSuffixTree(arbolBusqueda, db, consulta);
                     }
                     resultados = top5(resultados, consulta);
                     ultimaBusqueda = consulta;
